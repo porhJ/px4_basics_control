@@ -1,0 +1,35 @@
+# ROS2 workspace build artifacts
+/build/
+/install/
+/log/
+
+# colcon
+.colcon/
+.colcon-logging/
+COLCON_IGNORE
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Packages with ament/cmake
+ament_cmake_core/
+ament_cmake_index/
+ament_index/
+
+# Python build outputs (if you have Python nodes)
+**/__pycache__/
+*.pyc
+
+# VSCode / IDE
+.vscode/
+.idea/
+*.swp
+
+# Misc
+*.log
+
+/src/px4_msgs
+/src/px4_ros_com
