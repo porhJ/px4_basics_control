@@ -66,7 +66,7 @@ private:
         float y = msg->position[1];
         */
         float z = msg->position[2];
-        float vz = msg->velocity[0];
+        float vz = msg->velocity[2];
         altitude_ = -z;
         upward_vel = -vz;
         
