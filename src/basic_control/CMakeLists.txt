@@ -9,9 +9,10 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(px4_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 add_executable(takeoff_landing src/takeoff_landing.cpp)
-ament_target_dependencies(takeoff_landing rclcpp px4_msgs)
+ament_target_dependencies(takeoff_landing rclcpp px4_msgs std_msgs)
 
 install(TARGETS
   takeoff_landing

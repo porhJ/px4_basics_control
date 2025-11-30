@@ -3680,6 +3680,14 @@
 		},
 		{
 			"isExternal" : true,
+			"path" : "/opt/ros/humble/share/std_msgs/cmake/std_msgsConfig-version.cmake"
+		},
+		{
+			"isExternal" : true,
+			"path" : "/opt/ros/humble/share/std_msgs/cmake/std_msgsConfig.cmake"
+		},
+		{
+			"isExternal" : true,
 			"path" : "/opt/ros/humble/share/ament_lint_auto/cmake/ament_lint_autoConfig-version.cmake"
 		},
 		{

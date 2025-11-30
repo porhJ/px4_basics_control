@@ -5,6 +5,7 @@
 #include <px4_msgs/msg/vehicle_odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <stdint.h>
+#include <std_msgs/msg/bool.hpp>
 
 #include <chrono>
 #include <iostream>
@@ -23,16 +24,15 @@ public:
         offboard_control_mode_publisher_ = this->create_publisher<OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
         trajectory_setpoint_publisher_ = this->create_publisher<TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
         vehicle_command_publisher_ = this->create_publisher<VehicleCommand>("/fmu/in/vehicle_command", 10);
+        mission_status_ = this->create_publisher<std_msgs::msg::Bool>("/mission/reached_final_waypoint", 10);
         pos_ = this->create_subscription<VehicleOdometry>(
             "/fmu/out/vehicle_odometry", rclcpp::SensorDataQoS(),
             std::bind(&takeoffLandingNode::pos_callback, this, std::placeholders::_1)
         );
 
-        float tmp[4][3] = {
+        float tmp[2][3] = {
         {0.0, 0.0,  0.0},
-        {0.0, 0.0, -10.0},
-        {10.0, 0.0, -10.0},
-        {10.0,10.0, -10.0}
+        {10.0,-10.0, -10.0}
         };
         memcpy(waypoints, tmp, sizeof(waypoints));
 
@@ -55,7 +55,8 @@ private:
     rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::Subscription<VehicleOdometry>::SharedPtr pos_;
-    
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr mission_status_;
+
     px4_msgs::msg::TrajectorySetpoint target_pos_;
     float altitude_;
     int STATE_;
@@ -63,7 +64,7 @@ private:
     float upward_vel;
     float local_pos[3];
     float local_vel[3];
-    float waypoints[4][3];
+    float waypoints[2][3];
     int num_waypoints;
     float distance_;
 
@@ -106,15 +107,27 @@ private:
             RCLCPP_INFO(this->get_logger(), "Reached the #%i waypoint: (%.2f, %.2f, %.2f)", STATE_, target_pos_.position[0], target_pos_.position[1], target_pos_.position[2]);
             STATE_++;
             }
-        } else if (STATE_ == num_waypoints) { // if it reaches the final goal
+        } 
+        else if (STATE_ == num_waypoints) { // if it reaches the final goal
             RCLCPP_INFO(this->get_logger(), "Reached the final waypoint: (%.2f, %.2f, %.2f)", target_pos_.position[0], target_pos_.position[1], target_pos_.position[2]);
-            RCLCPP_INFO(this->get_logger(), "The vehicle starts landing");
-            this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
+            RCLCPP_INFO(this->get_logger(), "The vehicle starts landing by using aruco landing node");
+            publish_mission_status();
+            // this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
             timer_->cancel();
         }
         
         
+        
         offboard_setpoint_counter_++;
+    }
+
+
+    void publish_mission_status()
+    {
+        std_msgs::msg::Bool msg;
+        msg.data = true;
+        mission_status_->publish(msg);
+        RCLCPP_INFO(this->get_logger(), "Publish that we have reached the last waypoint.");
     }
 
     void publish_offboard_control_mode()
