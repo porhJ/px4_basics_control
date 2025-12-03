@@ -10,11 +10,17 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+
+
+add_executable(offboard_master src/offboard_master.cpp)
+ament_target_dependencies(offboard_master rclcpp px4_msgs std_msgs geometry_msgs)
 
 add_executable(takeoff_landing src/takeoff_landing.cpp)
 ament_target_dependencies(takeoff_landing rclcpp px4_msgs std_msgs)
 
 install(TARGETS
+  offboard_master
   takeoff_landing
   DESTINATION lib/${PROJECT_NAME}
 )

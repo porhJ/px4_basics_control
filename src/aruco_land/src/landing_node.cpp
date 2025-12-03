@@ -1,4 +1,5 @@
 #include <rclcpp/rclcpp.hpp>
+#include <geometry_msgs/msg/twist_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include <std_msgs/msg/bool.hpp>
@@ -18,12 +19,9 @@ public:
         marker_detected_ = false;
         auto qos = rclcpp::QoS(1).best_effort();
         // Publishers
-        offboard_control_mode_publisher_ = this->create_publisher<OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
-        trajectory_setpoint_publisher_ = this->create_publisher<TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
-        vehicle_command_publisher_ = this->create_publisher<VehicleCommand>("/fmu/in/vehicle_command", 10);
-        arm_timer_ = this->create_wall_timer(
-            1000ms, std::bind(&LandingNode::startOffboard, this)
-        );
+        velocity_publisher_ = this->create_publisher<geometry_msgs::msg::TwistStamped>("/ext_setpoint/vel", 10);
+        pos_publiser_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/ext_setpoint/pos", 10);
+        land_ = this->create_publisher<std_msgs::msg::Bool>("/land_command", 10);
 
         // Subscribers
         pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
@@ -31,12 +29,6 @@ public:
             std::bind(&LandingNode::poseCallback, this, std::placeholders::_1)
         );
         
-        /*
-        mission_status_sub_ = this->create_subscription<std_msgs::msg::Bool>(
-            "/mission/reached_final_waypoint", 10, 
-            std::bind(&LandingNode::controlCallback, this, std::placeholders::_1)
-        );
-        */
 
         // Main Control Loop Timer (Runs at 20Hz)
         timer_ = this->create_wall_timer(50ms, std::bind(&LandingNode::timerCallback, this));
@@ -48,18 +40,16 @@ private:
     bool mission_node_stopped;
     bool marker_detected_;
     
+    
     // Last known marker position relative to camera
     float err_x, err_y, err_z;
     rclcpp::Time last_detection_time_;
 
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
-    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr mission_status_sub_;
-    
-    rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
-    rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
-    rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;
-    rclcpp::TimerBase::SharedPtr arm_timer_;
     rclcpp::TimerBase::SharedPtr timer_;
+    rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr velocity_publisher_;
+    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pos_publiser_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr land_;
 
     // Receive detection from Vision Node
     void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
@@ -78,8 +68,6 @@ private:
 
     void timerCallback()
     {
-        publish_offboard_control_mode();
-
         bool is_valid_detection = false;
         
         if (marker_detected_) {
@@ -92,19 +80,12 @@ private:
             }
         }
 
-        // 4. Calculate Setpoints based on validity
-        TrajectorySetpoint setpoint{};
-        setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+        geometry_msgs::msg::TwistStamped vel_msg{};
+        
+        vel_msg.header.stamp = now();
 
         if (!is_valid_detection) {
-            // Failsafe behavior: HOLD VELOCITY 0
-            // We print only once every second to avoid flooding logs (optional improvement)
-            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, "No Marker detected! Holding position.");
-            
-            setpoint.velocity[0] = 0.0;
-            setpoint.velocity[1] = 0.0;
-            setpoint.velocity[2] = 0.0; // Hold altitude
-            setpoint.yawspeed = 0.0;
+            return;
         } 
         else {
             // VISUAL SERVOING LOGIC
@@ -122,62 +103,24 @@ private:
             if (vel_x > 1.0) vel_x = 1.0; if (vel_x < -1.0) vel_x = -1.0;
             if (vel_y > 1.0) vel_y = 1.0; if (vel_y < -1.0) vel_y = -1.0;
 
-            setpoint.velocity[0] = vel_x; 
-            setpoint.velocity[1] = vel_y;
-            setpoint.velocity[2] = vel_z; 
-            setpoint.yawspeed = 0.0;
+            vel_msg.twist.linear.x = vel_x; 
+            vel_msg.twist.linear.y = vel_y;
+            vel_msg.twist.linear.z = vel_z; 
 
             RCLCPP_INFO(get_logger(), "Aligning: Vx=%.2f Vy=%.2f Dist=%.2f", vel_x, vel_y, err_z);
 
             // Landing Trigger
             if (err_z < 0.6) { 
+                std_msgs::msg::Bool msg;
+                msg.data = true;
                 RCLCPP_INFO(get_logger(), "Close enough! Triggering LAND mode.");
-                this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
+                land_->publish(msg);
                 timer_->cancel(); 
             }
         }
 
-        trajectory_setpoint_publisher_->publish(setpoint);
+        velocity_publisher_->publish(vel_msg);
     }
-
-    void publish_offboard_control_mode()
-    {
-        OffboardControlMode msg{};
-        msg.position = false;      // WE ARE USING VELOCITY NOW
-        msg.velocity = true;       // ENABLE VELOCITY CONTROL
-        msg.acceleration = false;
-        msg.attitude = false;
-        msg.body_rate = false;
-        msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
-        offboard_control_mode_publisher_->publish(msg);     
-    }
-
-    void publish_vehicle_command(uint16_t command, float param1 = 0.0, float param2 = 0.0) {
-        VehicleCommand msg{};
-        msg.param1 = param1;
-        msg.param2 = param2;
-        msg.command = command;
-        msg.target_system = 1;
-        msg.target_component = 1;
-        msg.source_system = 1;
-        msg.source_component = 1;
-        msg.from_external = true;
-        msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
-        vehicle_command_publisher_->publish(msg);
-    }
-
-    void startOffboard()
-    {
-        RCLCPP_INFO(this->get_logger(), "Sending ARM + OFFBOARD commands...");
-
-        // 1. Arm
-        publish_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0);
-
-        // 2. Request OFFBOARD
-        publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0);
-        // px4 mode 6 = offboard
-    }
-
 };
 
 int main(int argc, char **argv)
