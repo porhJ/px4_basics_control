@@ -17,18 +17,6 @@ find_package(px4_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)           
 find_package(tf2_geometry_msgs REQUIRED)
 
-# --- Vision Node ---
-add_executable(aruco_vision_node src/aruco_vision_node.cpp)
-
-ament_target_dependencies(aruco_vision_node
-  rclcpp
-  sensor_msgs
-  geometry_msgs
-  image_transport
-  cv_bridge
-  OpenCV
-)
-
 # --- Landing Node ---
 add_executable(landing_node src/landing_node.cpp)
 
@@ -43,7 +31,6 @@ ament_target_dependencies(landing_node
 
 # Install executables
 install(TARGETS
-  aruco_vision_node
   landing_node
   DESTINATION lib/${PROJECT_NAME}
 )
