@@ -17,6 +17,7 @@ public:
     {   
         mission_node_stopped = false;
         marker_detected_ = false;
+        start_land = false;
         auto qos = rclcpp::QoS(1).best_effort();
         // Publishers
         velocity_publisher_ = this->create_publisher<geometry_msgs::msg::TwistStamped>("/ext_setpoint/vel", 10);
@@ -24,6 +25,10 @@ public:
         land_ = this->create_publisher<std_msgs::msg::Bool>("/land_command", 10);
 
         // Subscribers
+        start_presland_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+            "/land_command/pres_land", 10,
+            std::bind(&LandingNode::startPresLandCallback, this, std::placeholders::_1)
+        );
         pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
             "/target_pose", qos,
             std::bind(&LandingNode::poseCallback, this, std::placeholders::_1)
@@ -39,6 +44,11 @@ public:
 private:
     bool mission_node_stopped;
     bool marker_detected_;
+    bool start_land;
+    float last_vel_x = 0.0f;
+    float last_vel_y = 0.0f;
+    float last_vel_z = 0.0f;
+    rclcpp::Time last_valid_pose_time_;
     
     
     // Last known marker position relative to camera
@@ -50,6 +60,7 @@ private:
     rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr velocity_publisher_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pos_publiser_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr land_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr start_presland_sub_;
 
     // Receive detection from Vision Node
     void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
@@ -57,70 +68,62 @@ private:
         last_detection_time_ = this->now();
         marker_detected_ = true;
 
-        // Vision Coordinate (Camera Frame)
-        // Usually for Down Facing Camera: X=Right, Y=Down(Forward in image), Z=Depth
-        // We need to map this to Drone Body Frame: X=Forward, Y=Right, Z=Down
-        // Save the error to use in the timer loop
-        err_x = msg->pose.position.x; 
+        err_x = msg->pose.position.x;
         err_y = msg->pose.position.y;
         err_z = msg->pose.position.z;
+
+        last_valid_pose_time_ = this->now();
     }
 
     void timerCallback()
     {
-        bool is_valid_detection = false;
-        
-        if (marker_detected_) {
-            auto time_now = this->now();
-            auto time_diff = time_now - last_detection_time_;
-            
-            // Only consider it valid if seen within the last 0.5 seconds
-            if (time_diff.seconds() < 0.5) {
-                is_valid_detection = true;
-            }
-        }
+        if (!start_land) return;
+        RCLCPP_INFO_ONCE(get_logger(), "Precision landing sequence initiated.");
+
+        bool seen_recent = (this->now() - last_valid_pose_time_).seconds() < 0.5;
 
         geometry_msgs::msg::TwistStamped vel_msg{};
-        
         vel_msg.header.stamp = now();
 
-        if (!is_valid_detection) {
-            return;
-        } 
-        else {
-            // VISUAL SERVOING LOGIC
-            float k_p = 1.0; 
-            
-            // Camera Frame -> Body Frame Mapping
-            // Cam X (Right) -> Body Y (Right)
-            // Cam Y (Down)  -> Body X (Forward)
-            
-            float vel_x = k_p * err_y; // Move Forward/Back
-            float vel_y = k_p * err_x; // Move Left/Right
-            float vel_z = 0.2;         // Descend speed
+        if (seen_recent) {
+            float k_p = 0.6f; // reduce gain to be less oscillatory
+            float vel_x = k_p * err_y;
+            float vel_y = k_p * err_x;
+            float vel_z = -0.2f; // descent (NED: negative down)
 
-            // Clamp velocities
-            if (vel_x > 1.0) vel_x = 1.0; if (vel_x < -1.0) vel_x = -1.0;
-            if (vel_y > 1.0) vel_y = 1.0; if (vel_y < -1.0) vel_y = -1.0;
-
-            vel_msg.twist.linear.x = vel_x; 
-            vel_msg.twist.linear.y = vel_y;
-            vel_msg.twist.linear.z = vel_z; 
-
-            RCLCPP_INFO(get_logger(), "Aligning: Vx=%.2f Vy=%.2f Dist=%.2f", vel_x, vel_y, err_z);
-
-            // Landing Trigger
-            if (err_z < 0.6) { 
-                std_msgs::msg::Bool msg;
-                msg.data = true;
-                RCLCPP_INFO(get_logger(), "Close enough! Triggering LAND mode.");
-                land_->publish(msg);
-                timer_->cancel(); 
-            }
+            // clamp...
+            last_vel_x = vel_x; last_vel_y = vel_y; last_vel_z = vel_z;
+        } else {
+            // fallback: send last good velocity but reduce magnitude (keeps control stable)
+            last_vel_x *= 0.6f;
+            last_vel_y *= 0.6f;
+            // keep descent so we don't hover back to mission
+            last_vel_z = -0.2f;
         }
 
+        vel_msg.twist.linear.x = last_vel_x;
+        vel_msg.twist.linear.y = last_vel_y;
+        vel_msg.twist.linear.z = last_vel_z;
+
         velocity_publisher_->publish(vel_msg);
+
+        // Only trigger nav-land when close
+        if (err_z < 0.6) {
+            std_msgs::msg::Bool msg; msg.data = true;
+            RCLCPP_INFO(get_logger(), "Close enough! Triggering LAND mode.");
+            land_->publish(msg);
+            timer_->cancel();
+        }
     }
+
+    void startPresLandCallback(const std_msgs::msg::Bool::SharedPtr msg)
+    {
+        if (msg->data) {
+            RCLCPP_INFO(get_logger(), "Precision landing sequence started.");
+            start_land = true;
+        }
+    }
+
 };
 
 int main(int argc, char **argv)

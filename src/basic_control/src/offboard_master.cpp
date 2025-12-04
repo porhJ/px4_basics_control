@@ -57,6 +57,7 @@ public:
 
 private:
 
+    bool ignore_position_setpoints_ = false;
     bool landing_in_progress_ = false;
     bool offboard_active = true;
     rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_pub_;
@@ -108,35 +109,37 @@ private:
 
         bool has_pos = (now() - last_pos_time_).seconds() < 0.3;
         bool has_vel = (now() - last_vel_time_).seconds() < 0.3;
-
         if (has_vel)
         {
-            // Velocity control
+            RCLCPP_INFO(this->get_logger(), "Current external velocity setpoints: vx: %.2f, vy: %.2f, vz: %.2f", external_vx_, external_vy_, external_vz_);
             mode.position = false;
             mode.velocity = true;
-
             sp.velocity[0] = external_vx_;
             sp.velocity[1] = external_vy_;
             sp.velocity[2] = external_vz_;
         }
         else if (has_pos)
-        {
-            // Position control
+        {   
+            RCLCPP_INFO(this->get_logger(), "Current external setpoints: x: %.2f, y: %.2f, z: %.2f", external_x_, external_y_, external_z_);
             mode.position = true;
             mode.velocity = false;
-
             sp.position[0] = external_x_;
             sp.position[1] = external_y_;
             sp.position[2] = external_z_;
+            hover_x_ = external_x_;
+            hover_y_ = external_y_;
+            hover_z_ = external_z_;
         }
         else
         {
-            // Hover default
+            // regular hover
+            RCLCPP_INFO(this->get_logger(), "No external setpoints received, hovering at last position.");
             mode.position = true;
             sp.position[0] = hover_x_;
             sp.position[1] = hover_y_;
             sp.position[2] = hover_z_;
         }
+
 
         offboard_pub_->publish(mode);
         traj_pub_->publish(sp);
@@ -146,12 +149,14 @@ private:
     void landCallback(const std_msgs::msg::Bool::SharedPtr msg)
     {
         if (msg->data) {
-            RCLCPP_INFO(get_logger(), "Landing Triggered from External Node");
-            publishCommand(VehicleCommand::VEHICLE_CMD_NAV_LAND);
+            RCLCPP_INFO(get_logger(), "Landing Triggered from LandingNode");
+
             landing_in_progress_ = true;
-            offboard_active = false;
+            offboard_active = true;   
+            publishCommand(VehicleCommand::VEHICLE_CMD_NAV_LAND);
         }
     }
+
 
     void landedCallback(const px4_msgs::msg::VehicleLandDetected::SharedPtr msg)
     {
