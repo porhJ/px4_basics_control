@@ -11,10 +11,11 @@ find_package(rclcpp REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(tf2 REQUIRED)
 
 
 add_executable(offboard_master src/offboard_master.cpp)
-ament_target_dependencies(offboard_master rclcpp px4_msgs std_msgs geometry_msgs)
+ament_target_dependencies(offboard_master rclcpp px4_msgs std_msgs geometry_msgs tf2)
 
 add_executable(mission_node src/mission_node.cpp)
 ament_target_dependencies(mission_node rclcpp px4_msgs std_msgs geometry_msgs)

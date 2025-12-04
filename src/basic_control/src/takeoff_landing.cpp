@@ -32,7 +32,7 @@ public:
 
         float tmp[2][3] = {
         {0.0, 0.0,  0.0},
-        {0.0,0.0, -10.0}
+        {10.0,10.0, -10.0}
         };
         memcpy(waypoints, tmp, sizeof(waypoints));
 

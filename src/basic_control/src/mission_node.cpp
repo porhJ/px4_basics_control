@@ -16,7 +16,6 @@ public:
     MissionNode() : Node("mission_node")
     {
        // Publishers
-        velocity_publisher_ = this->create_publisher<geometry_msgs::msg::TwistStamped>("/ext_setpoint/vel", 10);
         pos_publiser_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/ext_setpoint/pos", 10);
         start_presland_sub_ = this->create_publisher<std_msgs::msg::Bool>("/land_command/pres_land", 10);
 
@@ -26,10 +25,9 @@ public:
             std::bind(&MissionNode::pos_callback, this, std::placeholders::_1)
         );
 
-        float tmp[3][3] = {
-        {0.0, 0.0,  -10.0},
-        {0.0, 10.0, -10.0},
-        {10.0,10.0, -10.0}
+        float tmp[2][3] = {
+        {0.0, 0.0,  -5.0},
+        {10.0, 10.0, -5.0}
         };
         memcpy(waypoints, tmp, sizeof(waypoints));
 
@@ -47,7 +45,7 @@ public:
     }
 
 private:
-    float waypoints[3][3];
+    float waypoints[2][3];
     int num_waypoints;
     int STATE_;
     float altitude_;
@@ -76,32 +74,35 @@ private:
 
     void timerCallback()
     {   
+        if (STATE_ < num_waypoints) {
+            // Update target from waypoint list
+            target_pos_.pose.position.x = waypoints[STATE_][0];
+            target_pos_.pose.position.y = waypoints[STATE_][1];
+            target_pos_.pose.position.z = waypoints[STATE_][2];
+        }
         geometry_msgs::msg::PoseStamped pos_setpoint;
         pos_setpoint.header.stamp = this->now();
-        pos_setpoint.pose.position.x = target_pos_.pose.position.x;
-        pos_setpoint.pose.position.y = target_pos_.pose.position.y;
-        pos_setpoint.pose.position.z = target_pos_.pose.position.z;
+        pos_setpoint.pose = target_pos_.pose;
         pos_publiser_->publish(pos_setpoint);
 
         RCLCPP_INFO(this->get_logger(), "Current State: %i, Current waypoint: (%.2f, %.2f, %.2f)", STATE_, target_pos_.pose.position.x, target_pos_.pose.position.y, target_pos_.pose.position.z);
-        target_pos_.pose.position.x = waypoints[STATE_][0];
-        target_pos_.pose.position.y = waypoints[STATE_][1];
-        target_pos_.pose.position.z = waypoints[STATE_][2];
 
         distance_ = this->cal_distance(local_pos, waypoints[STATE_]);
-        if (STATE_ >= 0 && STATE_ < num_waypoints) {
-            if (distance_ <= 0.01) {
+        if (STATE_ < num_waypoints) {
+            if (distance_ <= 0.1) {
                 RCLCPP_INFO(this->get_logger(), "Reached the #%i waypoint: (%.2f, %.2f, %.2f)", STATE_, target_pos_.pose.position.x, target_pos_.pose.position.y, target_pos_.pose.position.z);
                 STATE_++;
             }
         } 
-        else if (STATE_ == num_waypoints) { // if it reaches the final goal
+        else { // if it reaches the final goal
             RCLCPP_INFO(this->get_logger(), "Reached the final waypoint: (%.2f, %.2f, %.2f)", target_pos_.pose.position.x, target_pos_.pose.position.y, target_pos_.pose.position.z);
             RCLCPP_INFO(this->get_logger(), "The vehicle starts landing by using aruco landing node");
             // this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
             std_msgs::msg::Bool msg;
             msg.data = true;
             start_presland_sub_->publish(msg);
+            RCLCPP_INFO(this->get_logger(), "Published pre-landing command.");
+            pos_publiser_.reset();
             timer_->cancel();
         }
         

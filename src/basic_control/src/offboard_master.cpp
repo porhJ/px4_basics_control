@@ -6,6 +6,9 @@
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <px4_msgs/msg/vehicle_land_detected.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2/LinearMath/Matrix3x3.h>
+
 
 
 using namespace px4_msgs::msg;
@@ -82,6 +85,19 @@ private:
         external_x_ = msg->pose.position.x;
         external_y_ = msg->pose.position.y;
         external_z_ = msg->pose.position.z;
+        tf2::Quaternion q(
+        msg->pose.orientation.x,
+        msg->pose.orientation.y,
+        msg->pose.orientation.z,
+        msg->pose.orientation.w
+        );
+
+        double roll, pitch, yaw_enu;
+        tf2::Matrix3x3(q).getRPY(roll, pitch, yaw_enu);
+
+        // Convert ENU → NED
+        external_yaw_ = -yaw_enu;
+            
     }
 
     void externalSetpointVel(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
@@ -93,6 +109,7 @@ private:
     }
 
     float external_x_, external_y_, external_z_, external_vx_, external_vy_, external_vz_;
+    float external_yaw_;
 
     void loop()
     {
