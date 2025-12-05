@@ -32,11 +32,12 @@ public:
 
         float tmp[2][3] = {
         {0.0, 0.0,  0.0},
-        {10.0,-10.0, -10.0}
+        {10.0,10.0, -10.0}
         };
         memcpy(waypoints, tmp, sizeof(waypoints));
 
         num_waypoints = sizeof(waypoints) / sizeof(waypoints[0]);
+        reached_final_waypoint_ = 0;
  
         STATE_ = 0; // current waypoint
         offboard_setpoint_counter_ = 0;
@@ -45,6 +46,7 @@ public:
         target_pos_.position[2] = waypoints[STATE_][2];
         target_pos_.yaw = -3.14;
         timer_ = this->create_wall_timer(100ms, std::bind(&takeoffLandingNode::takeoffLanding, this));
+        timer_mission_status_ = this->create_wall_timer(500ms, std::bind(&takeoffLandingNode::publish_mission_status, this));
         
         RCLCPP_INFO(this->get_logger(), "takeoffLandingNode has started");
     }
@@ -54,6 +56,7 @@ private:
     rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
     rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;
     rclcpp::TimerBase::SharedPtr timer_;
+    rclcpp::TimerBase::SharedPtr timer_mission_status_;
     rclcpp::Subscription<VehicleOdometry>::SharedPtr pos_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr mission_status_;
 
@@ -67,6 +70,7 @@ private:
     float waypoints[2][3];
     int num_waypoints;
     float distance_;
+    int reached_final_waypoint_;
 
     std::atomic<uint64_t> timestamp_; //!< common synced timestamped
 
@@ -111,8 +115,11 @@ private:
         else if (STATE_ == num_waypoints) { // if it reaches the final goal
             RCLCPP_INFO(this->get_logger(), "Reached the final waypoint: (%.2f, %.2f, %.2f)", target_pos_.position[0], target_pos_.position[1], target_pos_.position[2]);
             RCLCPP_INFO(this->get_logger(), "The vehicle starts landing by using aruco landing node");
-            publish_mission_status();
             // this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
+            target_pos_.position[0] = waypoints[-1][0];
+            target_pos_.position[1] = waypoints[-1][1];
+            target_pos_.position[2] = waypoints[-1][2];
+            reached_final_waypoint_ = 1;
             timer_->cancel();
         }
         
@@ -124,6 +131,12 @@ private:
 
     void publish_mission_status()
     {
+        if (reached_final_waypoint_ == 0) {
+            return;
+        }
+        publish_offboard_control_mode();
+        publish_trajectory_setpoint(target_pos_);
+
         std_msgs::msg::Bool msg;
         msg.data = true;
         mission_status_->publish(msg);

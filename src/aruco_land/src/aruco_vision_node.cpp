@@ -1,3 +1,4 @@
+/*
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -143,3 +144,4 @@ int main(int argc, char ** argv)
     rclcpp::shutdown();
     return 0;
 }
+*/
