@@ -1,11 +1,10 @@
-// safe_landing_node.cpp
+// safe_landing_node_v2.cpp
 #include <rclcpp/rclcpp.hpp>
-#include <geometry_msgs/msg/twist_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
-#include <px4_msgs/msg/vehicle_odometry.hpp>
 #include <std_msgs/msg/bool.hpp>
-#include <cmath>
-#include <limits>
+#include <px4_msgs/msg/vehicle_odometry.hpp>
+#include <Eigen/Core>
+#include <Eigen/Geometry>
 #include <math.h>
 
 using namespace std::chrono_literals;
@@ -13,162 +12,361 @@ using namespace std::chrono_literals;
 class SafeLandingNode : public rclcpp::Node
 {
 public:
-    SafeLandingNode() : Node("safe_landing_node")
+    SafeLandingNode() : Node("safe_landing_node_v2")
     {
-        start_land = false;
-        land_sent_ = false;
+        // ---- PARAMETERS ----
+        declare_parameter("descent_vel", -0.4);
+        declare_parameter("vel_p_gain", 1.2);
+        declare_parameter("vel_i_gain", 0.0);
+        declare_parameter("max_velocity", 1.0);
+        declare_parameter("target_timeout", 1.0);
+        declare_parameter("delta_position", 0.25);
+        declare_parameter("delta_velocity", 0.25);
+
+        get_parameter("descent_vel",  descent_vel_);
+        get_parameter("vel_p_gain",   p_gain_);
+        get_parameter("vel_i_gain",   i_gain_);
+        get_parameter("max_velocity", max_vel_);
+        get_parameter("target_timeout", timeout_sec_);
+        get_parameter("delta_position", delta_pos_);
+        get_parameter("delta_velocity", delta_vel_);
 
         auto qos = rclcpp::QoS(10).best_effort();
+        // ---- PUB / SUB ----
+        pos_pub_  = create_publisher<geometry_msgs::msg::PoseStamped>("/ext_setpoint/pos", rclcpp::SensorDataQoS());
+        land_pub_ = create_publisher<std_msgs::msg::Bool>("/land_command", 10);
 
-        pos_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/ext_setpoint/pos", 10);
-        land_pub_ = this->create_publisher<std_msgs::msg::Bool>("/land_command", 10);
+        pose_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
+            "/target_pose", qos,
+            std::bind(&SafeLandingNode::targetPoseCallback, this, std::placeholders::_1));
 
-        start_presland_sub_ = this->create_subscription<std_msgs::msg::Bool>(
-            "/land_command/pres_land", 10,
-            std::bind(&SafeLandingNode::startPresLandCallback, this, std::placeholders::_1)
-        );
-
-        pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-            "/target_pose",
-            qos,
-            std::bind(&SafeLandingNode::poseCallback, this, std::placeholders::_1)
-        );
-
-        odom_sub_ = this->create_subscription<px4_msgs::msg::VehicleOdometry>(
+        odom_sub_ = create_subscription<px4_msgs::msg::VehicleOdometry>(
             "/fmu/out/vehicle_odometry",
             rclcpp::SensorDataQoS(),
-            std::bind(&SafeLandingNode::odomCallback, this, std::placeholders::_1)
+            std::bind(&SafeLandingNode::odomCallback, this, std::placeholders::_1));
+
+        start_sub_ = create_subscription<std_msgs::msg::Bool>(
+            "/land_command/pres_land",
+            rclcpp::QoS(1).best_effort(),
+            std::bind(&SafeLandingNode::startCallback, this, std::placeholders::_1)
         );
 
-        timer_ = this->create_wall_timer(50ms, std::bind(&SafeLandingNode::timerCallback, this));
+        timer_ = create_wall_timer(50ms, std::bind(&SafeLandingNode::updateLoop, this));
 
-        // defaults
-        err_x = err_y = err_z = 1000.0f;
-        last_valid_pose_time_ = this->now() - rclcpp::Duration::from_seconds(10.0); // mark old initially
-
-        RCLCPP_INFO(this->get_logger(), "SafeLandingNode started");
+        initStateMachine();
+        RCLCPP_INFO(get_logger(), "Precision landing node (offboard-style) started");
     }
 
 private:
-    // state
-    bool start_land;
-    bool land_sent_;
 
-    // pose and odom
-    float err_x{1000.0f}, err_y{1000.0f}, err_z{1000.0f};
-    float current_yaw_{0.0f};
-    rclcpp::Time last_valid_pose_time_;
-    float target_x, target_y, target_z;
+    // ========================
+    // ====== STATE ENUM ======
+    // ========================
+    enum class State { Idle, Search, Approach, Descend, Finished };
+    State state_;
 
-    // publishers/subscribers
-    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr start_presland_sub_;
+    void initStateMachine()
+    {
+        state_ = State::Idle;
+        last_tag_time_ = now() - rclcpp::Duration::from_seconds(5);
+        tag_seen_ = false;
+
+        vel_int_x_ = vel_int_y_ = 0;
+        search_index_ = 0;
+
+        generateSearchSpiral();
+    }
+
+    // ========================
+    // ====== VARIABLES ======
+    // ========================
+    // Tag pose world frame
+    Eigen::Vector3d tag_pos_world_;
+    Eigen::Quaterniond tag_q_world_;
+
+    // Drone odometry
+    Eigen::Vector3d drone_pos_;
+    Eigen::Quaterniond drone_q_;
+    float drone_yaw_{0};
+
+    // PI control integrators
+    float vel_int_x_, vel_int_y_;
+
+    // Params
+    double descent_vel_;
+    double p_gain_, i_gain_, max_vel_;
+    double timeout_sec_, delta_pos_, delta_vel_;
+
+    // Tag timing
+    rclcpp::Time last_tag_time_;
+    bool tag_seen_;
+
+    // Search spiral
+    std::vector<Eigen::Vector3d> search_points_;
+    int search_index_;
+
+    // ========================
+    // ====== PUB/SUB =========
+    // ========================
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
     rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr odom_sub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pos_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr land_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
-    rclcpp::Time current_time_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr start_sub_;
 
-    // safety params
-    const double POSE_TIMEOUT_S = 0.5;   // how long a pose is considered fresh
-    const float MAX_HORIZ_VEL = 0.6f;    // m/s (very conservative)
-    const float DESCENT_VEL = -0.2f;     // m/s (negative = down in NED)
-    const float LAND_TRIGGER_Z = 0.6f;   // depth at which to trigger nav-land (meters)
-    float current_x, current_y, current_z;
-    bool marker_visible_;
-    
+    // ==================================================
+    // =============== TAG CALLBACK =====================
+    // ==================================================
+    void targetPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+    {
+        // Save tag time
+        tag_seen_ = true;
+        last_tag_time_ = now();
 
-    void startPresLandCallback(const std_msgs::msg::Bool::SharedPtr msg)
+        // Convert optical → camera → world frame (same as original logic)
+        Eigen::Vector3d pos(msg->pose.position.x,
+                            msg->pose.position.y,
+                            msg->pose.position.z);
+
+        Eigen::Quaterniond q(msg->pose.orientation.w,
+                             msg->pose.orientation.x,
+                             msg->pose.orientation.y,
+                             msg->pose.orientation.z);
+
+        // Optical → NED rotation
+        Eigen::Matrix3d R;
+        R << 0, -1, 0,
+             1,  0, 0,
+             0,  0, 1;
+
+        Eigen::Quaterniond q_opt_to_ned(R);
+
+        // Camera offset transform (example: 0,0,-0.1)
+        Eigen::Affine3d T_cam = 
+            Eigen::Translation3d(0, 0, -0.1) * q_opt_to_ned;
+
+        Eigen::Affine3d T_drone = 
+            Eigen::Translation3d(drone_pos_) * drone_q_;
+
+        Eigen::Affine3d T_tag =
+            Eigen::Translation3d(pos) * q;
+
+        auto T_world = T_drone * T_cam * T_tag;
+
+        tag_pos_world_ = T_world.translation();
+        tag_q_world_   = Eigen::Quaterniond(T_world.rotation());
+
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+            "Tag detected at: %.2f %.2f %.2f",
+            tag_pos_world_.x(), tag_pos_world_.y(), tag_pos_world_.z());
+    }
+
+    void startCallback(const std_msgs::msg::Bool::SharedPtr msg)
     {
         if (msg->data) {
-            RCLCPP_INFO(this->get_logger(), "Received pres_land -> starting precision landing");
-            start_land = true;
-            land_sent_ = false;
-            last_valid_pose_time_ = this->now();
+            RCLCPP_INFO(get_logger(), "Switching IDLE → SEARCH");
+            state_ = State::Search;
         }
     }
 
-    void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
-    {
-        
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500,
-                     "Vision received: err = (%.2f, %.2f, %.2f)", err_x, err_y, err_z);
-        last_valid_pose_time_ = this->now();
-        err_x = -msg->pose.position.x;
-        err_y = -msg->pose.position.y;
-        err_z = -msg->pose.position.z;
-    }
-
+    // ==================================================
+    // ================= ODOM CALLBACK ==================
+    // ==================================================
     void odomCallback(const px4_msgs::msg::VehicleOdometry::SharedPtr msg)
     {
-        // extract yaw from quaternion
-        double qw = msg->q[0];
-        double qx = msg->q[1];
-        double qy = msg->q[2];
-        double qz = msg->q[3];
-        current_x = msg->position[0];
-        current_y = msg->position[1];
-        current_z = msg->position[2];
-        current_yaw_ = std::atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz));
+        drone_pos_ = Eigen::Vector3d(msg->position[0],
+                                     msg->position[1],
+                                     msg->position[2]);
+
+        drone_q_ = Eigen::Quaterniond(msg->q[0], msg->q[1], msg->q[2], msg->q[3]);
+
+        drone_yaw_ = std::atan2(
+            2*(drone_q_.w()*drone_q_.z() + drone_q_.x()*drone_q_.y()),
+            1 - 2*(drone_q_.y()*drone_q_.y() + drone_q_.z()*drone_q_.z()));
     }
 
-    void timerCallback()
-    {   
-        if (!start_land) {
-            return; // not started yet
-        }
-        
-        float dx_world = err_x * std::cos(current_yaw_) - err_y * std::sin(current_yaw_);
-        float dy_world = err_x * std::sin(current_yaw_) + err_y * std::cos(current_yaw_);
-        RCLCPP_INFO(this->get_logger(),
-                     "Vision in world frame: dx = %.2f, dy = %.2f", dx_world, dy_world);
-        float max_step = 0.2f; // meters per cycle
-        dx_world = std::clamp(dx_world, -max_step, max_step);
-        dy_world = std::clamp(dy_world, -max_step, max_step);
-        float k = 0.1f; 
-        dx_world = k * dx_world;
-        dy_world = k * dy_world;
 
-
-        
-        target_x = current_x + dx_world; 
-        target_y = current_y + dy_world;
-        target_z = current_z + 0.1f; 
-        RCLCPP_INFO(this->get_logger(),
-                     "target setpoint: x = %.2f, y = %.2f, z = %.2f", target_x, target_y, target_z);
-        geometry_msgs::msg::PoseStamped pos_setpoint;
-        pos_setpoint.header.stamp = this->now();
-        pos_setpoint.pose.position.x = target_x;
-        pos_setpoint.pose.position.y = target_y;
-        pos_setpoint.pose.position.z = target_z;
-        double yaw_ned = -current_yaw_;
-        setYawInPose(pos_setpoint.pose, yaw_ned);
-        pos_pub_->publish(pos_setpoint);
-
-        if (-current_z <= LAND_TRIGGER_Z && !land_sent_) {
-            RCLCPP_INFO(this->get_logger(), "Triggering landing command at z=%.2f m", current_z);
-            std_msgs::msg::Bool land_msg;
-            land_msg.data = true;
-            land_pub_->publish(land_msg);
-            RCLCPP_INFO(this->get_logger(), "Landing command sent");
-            land_sent_ = true;
-            timer_->cancel();
-        }
-    }
-
-    void setYawInPose(geometry_msgs::msg::Pose &pose, double yaw_ned)
+    // ==================================================
+    // ================= MAIN LOOP ======================
+    // ==================================================
+    void updateLoop()
     {
-        double cy = std::cos(yaw_ned * 0.5);
-        double sy = std::sin(yaw_ned * 0.5);
+        if (state_ == State::Idle)
+        {
+            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000, "Waiting...");
+            return;
+        }
 
-        pose.orientation.x = 0.0;
-        pose.orientation.y = 0.0;
-        pose.orientation.z = sy;
-        pose.orientation.w = cy;
+        bool lost_target = checkTargetLost();
+
+        switch (state_)
+        {
+        case State::Search:
+            runSearchState(lost_target);
+            break;
+
+        case State::Approach:
+            runApproachState(lost_target);
+            break;
+
+        case State::Descend:
+            runDescendState(lost_target);
+            break;
+
+        case State::Finished:
+            break;
+
+        default:
+            break;
+        }
+    }
+
+    // ==================================================
+    // =============== STATE HANDLERS ===================
+    // ==================================================
+
+    void runSearchState(bool lost)
+    {
+        if (!lost)
+        {
+            RCLCPP_INFO(get_logger(), "Target found. → Approach");
+            state_ = State::Approach;
+            return;
+        }
+
+        // Follow spiral
+        Eigen::Vector3d wp = search_points_[search_index_];
+
+        publishPose(wp, drone_yaw_);
+        RCLCPP_INFO(get_logger(), "Setpoint sent..")
+
+        if ((wp - drone_pos_).norm() < 0.3)
+            search_index_ = (search_index_ + 1) % search_points_.size();
+    }
+
+
+    void runApproachState(bool lost)
+    {
+        if (lost)
+        {
+            RCLCPP_WARN(get_logger(), "Target lost during approach → abort");
+            state_ = State::Idle;
+            return;
+        }
+
+        Eigen::Vector3d target(tag_pos_world_.x(),
+                               tag_pos_world_.y(),
+                               drone_pos_.z());
+
+        publishPose(target, drone_yaw_);
+
+        if ((target - drone_pos_).norm() < delta_pos_)
+            state_ = State::Descend;
+    }
+
+
+    void runDescendState(bool lost)
+    {
+        if (lost)
+        {
+            RCLCPP_WARN(get_logger(), "Target lost during descent → abort");
+            state_ = State::Idle;
+            return;
+        }
+
+        Eigen::Vector2d vel_xy = computePIControlXY();
+
+        geometry_msgs::msg::PoseStamped sp;
+        sp.header.stamp = now();
+        sp.pose.position.x = drone_pos_.x() + vel_xy.x() * 0.05;
+        sp.pose.position.y = drone_pos_.y() + vel_xy.y() * 0.05;
+        sp.pose.position.z = drone_pos_.z() + descent_vel_ * 0.05;
+        setYaw(sp.pose, drone_yaw_);
+        pos_pub_->publish(sp);
+
+        if (drone_pos_.z() > -0.6)  // near ground
+        {
+            std_msgs::msg::Bool msg;
+            msg.data = true;
+            land_pub_->publish(msg);
+            RCLCPP_INFO(get_logger(), "Landing triggered");
+            state_ = State::Finished;
+        }
+    }
+
+    // ==================================================
+    // =============== HELPERS ==========================
+    // ==================================================
+
+    bool checkTargetLost()
+    {
+        if (!tag_seen_) return true;
+
+        double dt = (now() - last_tag_time_).seconds();
+        return dt > timeout_sec_;
+    }
+
+    void publishPose(const Eigen::Vector3d& p, double yaw)
+    {
+        geometry_msgs::msg::PoseStamped msg;
+        msg.header.stamp = now();
+        msg.pose.position.x = p.x();
+        msg.pose.position.y = p.y();
+        msg.pose.position.z = p.z();
+        setYaw(msg.pose, yaw);
+        pos_pub_->publish(msg);
+    }
+
+    void setYaw(geometry_msgs::msg::Pose& pose, double yaw)
+    {
+        pose.orientation.w = cos(yaw * 0.5);
+        pose.orientation.z = sin(yaw * 0.5);
+        pose.orientation.x = 0;
+        pose.orientation.y = 0;
+    }
+
+    Eigen::Vector2d computePIControlXY()
+    {
+        double dx = drone_pos_.x() - tag_pos_world_.x();
+        double dy = drone_pos_.y() - tag_pos_world_.y();
+
+        vel_int_x_ += dx;
+        vel_int_y_ += dy;
+
+        vel_int_x_ = std::clamp(vel_int_x_, -float(max_vel_), float(max_vel_));
+        vel_int_y_ = std::clamp(vel_int_y_, -float(max_vel_), float(max_vel_));
+
+        double vx = -(p_gain_ * dx + i_gain_ * vel_int_x_);
+        double vy = -(p_gain_ * dy + i_gain_ * vel_int_y_);
+
+        vx = std::clamp(vx, -max_vel_, max_vel_);
+        vy = std::clamp(vy, -max_vel_, max_vel_);
+
+        return {vx, vy};
+    }
+
+    // Generate spiral search path
+    void generateSearchSpiral()
+    {
+        double z = -2.5;
+        double radius = 2.0;
+
+        for (int i = 0; i < 20; i++)
+        {
+            double angle = i * 0.5;
+            double r = 0.1 * i;
+            search_points_.push_back(
+                Eigen::Vector3d(r*cos(angle), r*sin(angle), z)
+            );
+        }
     }
 };
 
-int main(int argc, char **argv)
+// ========================
+// ======== MAIN ==========
+// ========================
+int main(int argc, char** argv)
 {
     rclcpp::init(argc, argv);
     rclcpp::spin(std::make_shared<SafeLandingNode>());

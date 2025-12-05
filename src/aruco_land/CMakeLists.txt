@@ -16,6 +16,7 @@ find_package(std_msgs REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)           
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(Eigen3 REQUIRED)
 
 # --- Landing Node ---
 add_executable(landing_node src/landing_node.cpp)
@@ -27,6 +28,10 @@ ament_target_dependencies(landing_node
   px4_msgs
   tf2_ros
   tf2_geometry_msgs
+)
+
+target_link_libraries(landing_node
+  Eigen3::Eigen
 )
 
 # Install executables

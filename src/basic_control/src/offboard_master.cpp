@@ -33,7 +33,7 @@ public:
         );
         // External setpoint subscriber
         ext_pos_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
-            "/ext_setpoint/pos", 10,
+            "/ext_setpoint/pos", rclcpp::SensorDataQoS(),
             std::bind(&OffboardMaster::externalSetpointPos, this, std::placeholders::_1)
         );
 
@@ -124,8 +124,8 @@ private:
         TrajectorySetpoint sp{};
         sp.timestamp = now().nanoseconds() / 1000;
 
-        bool has_pos = (now() - last_pos_time_).seconds() < 0.3;
-        bool has_vel = (now() - last_vel_time_).seconds() < 0.3;
+        bool has_pos = (now() - last_pos_time_).seconds() < 0.6;
+        bool has_vel = (now() - last_vel_time_).seconds() < 0.6;
         if (has_vel)
         {
             RCLCPP_INFO(this->get_logger(), "Current external velocity setpoints: vx: %.2f, vy: %.2f, vz: %.2f", external_vx_, external_vy_, external_vz_);
