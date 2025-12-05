@@ -20,7 +20,7 @@ public:
         declare_parameter("vel_i_gain", 0.0);
         declare_parameter("max_velocity", 1.0);
         declare_parameter("target_timeout", 1.0);
-        declare_parameter("delta_position", 0.25);
+        declare_parameter("delta_position", 0.4);
         declare_parameter("delta_velocity", 0.25);
 
         get_parameter("descent_vel",  descent_vel_);
@@ -31,6 +31,7 @@ public:
         get_parameter("delta_position", delta_pos_);
         get_parameter("delta_velocity", delta_vel_);
 
+        start_ = false;
         auto qos = rclcpp::QoS(10).best_effort();
         // ---- PUB / SUB ----
         pos_pub_  = create_publisher<geometry_msgs::msg::PoseStamped>("/ext_setpoint/pos", rclcpp::SensorDataQoS());
@@ -84,14 +85,17 @@ private:
     Eigen::Vector3d tag_pos_world_;
     Eigen::Quaterniond tag_q_world_;
 
+
     // Drone odometry
     Eigen::Vector3d drone_pos_;
+    Eigen::Vector3d last_drone_pos_;
     Eigen::Quaterniond drone_q_;
     float drone_yaw_{0};
+    float fixed_approach_height_{-7.0};
 
     // PI control integrators
     float vel_int_x_, vel_int_y_;
-
+    
     // Params
     double descent_vel_;
     double p_gain_, i_gain_, max_vel_;
@@ -104,6 +108,8 @@ private:
     // Search spiral
     std::vector<Eigen::Vector3d> search_points_;
     int search_index_;
+
+    bool start_;
 
     // ========================
     // ====== PUB/SUB =========
@@ -160,14 +166,18 @@ private:
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
             "Tag detected at: %.2f %.2f %.2f",
             tag_pos_world_.x(), tag_pos_world_.y(), tag_pos_world_.z());
+        if (start_ && state_ == State::Idle){
+            RCLCPP_INFO(get_logger(), "Starting landing mission...");
+            state_ = State::Search;
+            
+        }
     }
 
     void startCallback(const std_msgs::msg::Bool::SharedPtr msg)
-    {
-        if (msg->data) {
-            RCLCPP_INFO(get_logger(), "Switching IDLE → SEARCH");
-            state_ = State::Search;
-        }
+    {   
+        if (state_ == State::Idle && msg->data){
+            start_ = true;
+        } 
     }
 
     // ==================================================
@@ -239,7 +249,7 @@ private:
         Eigen::Vector3d wp = search_points_[search_index_];
 
         publishPose(wp, drone_yaw_);
-        RCLCPP_INFO(get_logger(), "Setpoint sent..")
+        RCLCPP_INFO(get_logger(), "Setpoint sent..");
 
         if ((wp - drone_pos_).norm() < 0.3)
             search_index_ = (search_index_ + 1) % search_points_.size();
@@ -255,14 +265,19 @@ private:
             return;
         }
 
+
         Eigen::Vector3d target(tag_pos_world_.x(),
                                tag_pos_world_.y(),
-                               drone_pos_.z());
+                               fixed_approach_height_);
 
         publishPose(target, drone_yaw_);
+        double horizontal_dist =Eigen::Vector2d(drone_pos_.x() - tag_pos_world_.x(),
+                                                drone_pos_.y() - tag_pos_world_.y()).norm();
 
-        if ((target - drone_pos_).norm() < delta_pos_)
+        if (horizontal_dist < delta_pos_) {
             state_ = State::Descend;
+            RCLCPP_INFO(get_logger(), "Approach complete. → Descend");
+        }
     }
 
 
@@ -281,11 +296,11 @@ private:
         sp.header.stamp = now();
         sp.pose.position.x = drone_pos_.x() + vel_xy.x() * 0.05;
         sp.pose.position.y = drone_pos_.y() + vel_xy.y() * 0.05;
-        sp.pose.position.z = drone_pos_.z() + descent_vel_ * 0.05;
+        sp.pose.position.z = drone_pos_.z() - descent_vel_ * 0.5;
         setYaw(sp.pose, drone_yaw_);
         pos_pub_->publish(sp);
 
-        if (drone_pos_.z() > -0.6)  // near ground
+        if (drone_pos_.z() > -3.0)  // near ground
         {
             std_msgs::msg::Bool msg;
             msg.data = true;
