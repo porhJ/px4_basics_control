@@ -17,11 +17,11 @@ Publishes sequential position setpoints to navigate the drone along predefined m
 Custom ROS 2 bridge package for Gazebo simulation, used when `ros_gz_bridge` cannot be utilized.  
 This package contains two nodes:
 
-- **gz_img_bridge** — Bridges Gazebo camera image topics to ROS 2 sensor_msgs/Image.  
-- **gz_caminfo_bridge** — Bridges Gazebo camera info topics to ROS 2 sensor_msgs/CameraInfo.
+#### **gz_img_bridge** — Bridges Gazebo camera image topics to ROS 2 sensor_msgs/Image.  
+#### **gz_caminfo_bridge** — Bridges Gazebo camera info topics to ROS 2 sensor_msgs/CameraInfo.
 
-#### aruco_land pkg
-### landing_node
+### aruco_land pkg
+#### landing_node
 Precision landing controller.  
 Implements target tracking and controlled descent to achieve accurate landing on markers or predefined targets.
 
